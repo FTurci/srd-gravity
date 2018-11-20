@@ -1,0 +1,130 @@
+# Set the relevant simulation parameters here
+variable Temp equal 10.0
+variable gfield    equal 10
+variable equilibrate_steps equal 100
+variable run_steps equal 10
+variable srd_per_cell equal 5.0 # "gamma"
+variable    sigma  equal 1
+variable    volume_s  equal PI/6.*${sigma}^3
+variable  scaling_factor equal 0.88
+variable  inaccessible_volume equal ${num_particles}*PI/6.*(${sigma}*${scaling_factor})^3
+variable  hgrid equal 0.5*(${sigma}*0.5)
+variable  hL equal  32*${hgrid}/2.
+variable  hLz equal 96*${hgrid}/2.
+variable  end_bottom equal 0 #0.9*${hLz}
+variable  begin_top equal ${end_bottom}+2.0
+variable  end_top equal ${hLz}-2.
+variable 	box_volume equal (2*${hL})^2*(2*${hLz})
+variable  reduced_density equal ${num_particles}/${box_volume}
+variable  packing_fraction equal ${reduced_density}*${volume_s}
+variable  srd_cell equal ${hgrid}^3
+variable  n_unit_cell equal (${box_volume}-${inaccessible_volume})/${srd_cell}
+variable  num_srd equal floor(${srd_per_cell}*${n_unit_cell})
+variable srd_acc equal -${gfield}*${num_particles}/${num_srd}*1./0.01
+
+#variable 		half_side_length equaGG/l (${box_volume}^(1/3))/2.
+variable stamp string phi${packing_fraction}-g${gfield}
+
+log   log-${stamp}.in
+
+print "=======> Reduced density  ${reduced_density}"
+print "=======> Packing fraction  ${packing_fraction}"
+print "=======> Initial SRD ${num_srd}"
+print "=======> Volume ${box_volume}"
+print "=======> SRD cell ${srd_cell}"
+# Set up the basics of the simulation
+units		 	lj
+atom_style	 	sphere
+atom_modify		first big 
+#Define the box centered at zero and add some particles
+region       		main_region block -${hL} ${hL} -${hL} ${hL} -${hLz} ${hLz}
+region          bottom      block -${hL} ${hL} -${hL} ${hL} -${hLz} ${end_bottom}
+region          top         block -${hL} ${hL} -${hL} ${hL} ${begin_top} ${end_top}
+create_box   		2 main_region
+
+create_atoms 		1  random ${num_particles} ${seed} main_region
+#create_atoms 		1  random 2 1234 bottom
+		
+group           	big type 1
+#velocity		big create 10 ${seed}
+# Set up the interaction potential 
+pair_style	 	lj/cut 2.5
+pair_modify  		shift yes
+pair_coeff	 	1 1 1.0 1.0 1.122
+pair_coeff    2 2 0.0 1.0 0.0
+pair_coeff		1 2 0 2.0 0.0
+
+set			type 1 mass 1.0
+set			type 1 diameter 1.0
+
+# Set up some more simulation basics
+neighbor	    	0.3 bin
+neigh_modify    	delay 0 every 5 check no
+timestep		0.001
+
+minimize		1.0e-4 1.0e-6 1000 1000
+#velocity		big create ${Temp} 1234 loop geom
+
+# add small particles as hi density lattice
+create_atoms 		2 random ${num_srd} ${seed} main_region
+set			type 2 diameter 0.0
+set			type 2 mass 0.01
+
+group           	small type 2
+velocity        	small create ${Temp} ${seed} loop geom
+velocity 		small zero linear
+
+#pair_style		lj/cut 2.5
+#pair_coeff		1 1 1.0 1.0 1.122  #epsilon 2.5 to have a prefactor 10
+#pair_coeff		2 2 0.0 1.0 0.0
+pair_coeff		1 2 0.0 0.465 0.5
+#pair_modify   shift yes
+
+#delete_atoms    overlap 0.5 small big
+
+
+variable actual_num_srd equal count(small)
+print "=======> The actual number of SRD particles is ${actual_num_srd}"
+#srd run
+dump		 	dump_xyz big custom 1000 dump-${stamp}-${number}.atom id xu yu zu vx vy vz
+dump_modify		dump_xyz sort id first yes
+dump                    dump_small small custom 10000 dump-small-${stamp}-${number}.atom id  vx vy vz
+dump_modify		dump_small sort id first yes
+
+neighbor       		0.3 bin
+neigh_modify    	delay 0 every 1 check yes
+
+comm_modify     	mode multi group big vel yes
+neigh_modify    	include big
+
+
+compute v_z small reduce ave vz
+compute v_y small reduce ave vy
+compute v_x small reduce ave vx
+compute v_z_big big reduce ave vz
+compute ctemp  big temp
+
+compute srdtemp small temp
+fix             	small_srd small srdf 10 big ${Temp} ${hgrid} 12345 &
+                	  radius ${scaling_factor} search ${hgrid} collision slip bounce 10 tstat yes  overlap yes  inside  warn acceleration ${srd_acc}
+thermo_style            custom step pe c_ctemp c_srdtemp c_v_x c_v_y c_v_z c_v_z_big
+thermo  100
+
+run			2000
+
+fix     		1 big nve
+#fix   3 all deform  1 x final -${hL} ${hL} 
+#fix   3 small temp/rescale 1 ${Temp} ${Temp} 0.0001 1.0
+#fix 			gravity big addforce 0 0 -0.5
+
+
+fix 2   big gravity ${gfield} vector 0 0 1 
+velocity small zero linear
+log vel.txt
+run			5000000
+#unfix			large_srd
+#unfix			small_srd
+#unfix			gravity
+#undump		 	dump_xyz
+#next			looping
+#jump 			SELF
